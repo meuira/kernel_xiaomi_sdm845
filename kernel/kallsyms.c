@@ -24,6 +24,9 @@
 #include <linux/ctype.h>
 #include <linux/slab.h>
 #include <linux/compiler.h>
+#ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+#include <linux/susfs_def.h>
+#endif // #ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
 
 #include <asm/sections.h>
 
@@ -607,9 +610,19 @@ static int s_show(struct seq_file *m, void *p)
 					tolower(iter->type);
 		seq_printf(m, "%pK %c %s\t[%s]\n", (void *)iter->value,
 			   type, iter->name, iter->module_name);
-	} else
+	} else {
+#ifdef CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+		if (!strncmp(iter->name, "ksu_", 4) ||
+			!strncmp(iter->name, "__ksu_", 6) ||
+			!strncmp(iter->name, "susfs_", 6) ||
+			!strncmp(iter->name, "kernelsu", 8))
+		{
+			return 0;
+		}
+#endif
 		seq_printf(m, "%pK %c %s\n", (void *)iter->value,
 			   iter->type, iter->name);
+	}
 	return 0;
 }
 

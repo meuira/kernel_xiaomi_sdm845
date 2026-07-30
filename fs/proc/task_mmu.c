@@ -20,8 +20,19 @@
 
 #include <asm/elf.h>
 #include <asm/uaccess.h>
+#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
+#include <linux/susfs_def.h>
+#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
 #include <asm/tlbflush.h>
 #include "internal.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+extern void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, unsigned long *out_ino);
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+extern int susfs_open_redirect_spoof_show_map_vma(struct inode *inode, unsigned long *out_ino, dev_t *out_dev, char *spoofed_name);
+#endif
 
 void task_mem(struct seq_file *m, struct mm_struct *mm)
 {
@@ -356,12 +367,46 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
 	dev_t dev = 0;
 	const char *name = NULL;
 
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	char *spoofed_redirected_name = NULL;
+#endif
+
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);
-		dev = inode->i_sb->s_dev;
-		ino = inode->i_ino;
-		pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
-	}
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+                if (inode->i_mapping &&
+                    unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
+                    susfs_is_current_proc_umounted_app()))
+                {
+                    show_vma_header_prefix(m, vma->vm_start, vma->vm_end, flags, pgoff, 0, 0);
+                    seq_pad(m, ' ');
+                    seq_putc(m, '\n');
+                    return;
+                }
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+        if (inode->i_mapping &&
+            unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
+            susfs_is_current_proc_umounted_app()))
+        {
+            seq_printf(m, "%08lx-%08lx ---p 00000000 00:00 0\n",
+                   vma->vm_start, vma->vm_end);
+            return;
+        }
+#endif
+
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+                dev = inode->i_sb->s_dev;
+                ino = inode->i_ino;
+                pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+                susfs_sus_kstat_spoof_show_map_vma(inode, &dev, &ino);
+#else
+                dev = inode->i_sb->s_dev;
+                ino = inode->i_ino;
+                pgoff = ((loff_t)vma->vm_pgoff) << PAGE_SHIFT;
+#endif
+        }
 
 	/* We don't show the stack guard page in /proc/maps */
 	start = vma->vm_start;
@@ -372,6 +417,17 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
 	 * Print the dentry name for named mappings, and a
 	 * special [heap] marker for the heap:
 	 */
+
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (spoofed_redirected_name) {
+		seq_pad(m, ' ');
+		seq_puts(m, spoofed_redirected_name);
+		seq_putc(m, '\n');
+		kfree(spoofed_redirected_name);
+		return;
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
 	if (file) {
 		seq_pad(m, ' ');
 		seq_file_path(m, file, "\n");
@@ -820,6 +876,43 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
 
 	smaps_walk.private = mss;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+    if (vma->vm_file) {
+        struct inode *inode = file_inode(vma->vm_file);
+        if (inode->i_mapping &&
+            unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
+            susfs_is_current_proc_umounted_app()))
+        {
+            show_map_vma(m, vma, is_pid);
+
+            seq_printf(m,
+                   "Size:           %8lu kB\n"
+                   "Rss:                   0 kB\n"
+                   "Pss:                   0 kB\n"
+                   "Shared_Clean:          0 kB\n"
+                   "Shared_Dirty:          0 kB\n"
+                   "Private_Clean:         0 kB\n"
+                   "Private_Dirty:         0 kB\n"
+                   "Referenced:            0 kB\n"
+                   "Anonymous:             0 kB\n"
+                   "AnonHugePages:         0 kB\n"
+                   "Shared_Hugetlb:        0 kB\n"
+                   "Private_Hugetlb:       0 kB\n"
+                   "Swap:                  0 kB\n"
+                   "SwapPss:               0 kB\n"
+                   "KernelPageSize: %8lu kB\n"
+                   "MMUPageSize:    %8lu kB\n"
+                   "Locked:                0 kB\n"
+                   "VmFlags: mr mw me\n",
+                   (vma->vm_end - vma->vm_start) >> 10,
+                   vma_kernel_pagesize(vma) >> 10,
+                   vma_mmu_pagesize(vma) >> 10);
+
+            goto done_sus_map;
+        }
+    }
+#endif
+
 #ifdef CONFIG_SHMEM
 	/* In case of smaps_rollup, reset the value from previous vma */
 	mss->check_shmem_swap = false;
@@ -913,8 +1006,12 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
 		show_smap_vma_flags(m, vma);
 	}
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+done_sus_map:
+#endif
+
 	m_cache_vma(m, vma);
-	return ret;
+	return 0;
 }
 
 static int show_pid_smap(struct seq_file *m, void *v)
@@ -1574,6 +1671,21 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
 			end = end_vaddr;
 		down_read(&mm->mmap_sem);
 		ret = walk_page_range(start_vaddr, end, &pagemap_walk);
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+        {
+            struct vm_area_struct *vma_sus = find_vma(mm, start_vaddr);
+            if (vma_sus && vma_sus->vm_file) {
+                struct inode *m_inode = file_inode(vma_sus->vm_file);
+                if (m_inode && m_inode->i_mapping &&
+                    unlikely(test_bit(AS_FLAGS_SUS_MAP, &m_inode->i_mapping->flags) &&
+                    susfs_is_current_proc_umounted_app()))
+                {
+                    memset(pm.buffer, 0, pm.len * PM_ENTRY_BYTES);
+                }
+            }
+        }
+#endif
+
 		up_read(&mm->mmap_sem);
 		start_vaddr = end;
 
