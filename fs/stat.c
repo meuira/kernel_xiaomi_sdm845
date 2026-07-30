@@ -14,9 +14,21 @@
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/pagemap.h>
+#include "mount.h"
 
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#include <linux/version.h>
+#endif
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
+
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat);
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
+#endif
 
 void generic_fillattr(struct inode *inode, struct kstat *stat)
 {
@@ -33,6 +45,9 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 	stat->ctime = inode->i_ctime;
 	stat->blksize = i_blocksize(inode);
 	stat->blocks = inode->i_blocks;
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
+#endif
 }
 
 EXPORT_SYMBOL(generic_fillattr);
@@ -51,13 +66,23 @@ EXPORT_SYMBOL(generic_fillattr);
  */
 int vfs_getattr_nosec(struct path *path, struct kstat *stat)
 {
-	struct inode *inode = d_backing_inode(path->dentry);
+	struct inode *inode = path->dentry->d_inode;
+	int err;
 
-	if (inode->i_op->getattr)
-		return inode->i_op->getattr(path->mnt, path->dentry, stat);
+	if (inode->i_op->getattr) {
+		err = inode->i_op->getattr(path->mnt, path->dentry, stat);
+	} else {
+		generic_fillattr(inode, stat);
+		err = 0;
+	}
 
-	generic_fillattr(inode, stat);
-	return 0;
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	if (!err) {
+		susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
+	}
+#endif
+
+    return err;
 }
 
 EXPORT_SYMBOL(vfs_getattr_nosec);
@@ -74,6 +99,11 @@ int vfs_getattr(struct path *path, struct kstat *stat)
 
 EXPORT_SYMBOL(vfs_getattr);
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_is_init_rc_hook_enabled;
+extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 int vfs_fstat(unsigned int fd, struct kstat *stat)
 {
 	struct fd f = fdget_raw(fd);
@@ -81,11 +111,21 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
 
 	if (f.file) {
 		error = vfs_getattr(&f.file->f_path, stat);
+#ifdef CONFIG_KSU_SUSFS
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_vfs_fstat(fd, &stat->size);
+#endif // #ifdef CONFIG_KSU_SUSFS
 		fdput(f);
 	}
 	return error;
 }
 EXPORT_SYMBOL(vfs_fstat);
+
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_su_compat_enabled;
+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+#endif
 
 int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
 		int flag)
@@ -93,6 +133,16 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
 	struct path path;
 	int error = -EINVAL;
 	unsigned int lookup_flags = 0;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (likely(!susfs_is_current_proc_umounted()) &&
+		static_branch_likely(&ksu_su_compat_enabled)) {
+
+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val))) {
+			ksu_handle_stat(&dfd, &filename, &flag);
+		}
+	}
+#endif
 
 	if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
 		      AT_EMPTY_PATH)) != 0)
@@ -108,6 +158,15 @@ retry:
 		goto out;
 
 	error = vfs_getattr(&path, stat);
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (real_mount(path.mnt)->mnt_id >= DEFAULT_KSU_MNT_ID &&
+		likely(susfs_is_current_proc_umounted_app()))
+		stat->mnt_id = susfs_get_non_sus_mnt_id_from_mnt(real_mount(path.mnt));
+	else
+		stat->mnt_id = real_mount(path.mnt)->mnt_id;
+#else
+		stat->mnt_id = real_mount(path.mnt)->mnt_id;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
