@@ -66,6 +66,8 @@
 #include <asm/io.h>
 #include <asm/unistd.h>
 
+#include <linux/string_helpers.h>
+
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -1159,9 +1161,18 @@ extern void susfs_spoof_uname(struct new_utsname* tmp);
 SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 {
 	struct new_utsname tmp;
+	char *cmdline = NULL;
 
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
+	cmdline = kstrdup_quotable_cmdline(current, GFP_ATOMIC);
+	if (cmdline) {
+		if (strncmp(cmdline, "com.google.android.gms", 22) == 0) {
+			strcpy(tmp.release, "4.9.337-perf");
+		}
+		kfree(cmdline);
+	}
+
 #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
 	if (static_branch_likely(&susfs_is_uname_spoof_buffer_set))
 		susfs_spoof_uname(&tmp);
