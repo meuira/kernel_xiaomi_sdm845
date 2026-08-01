@@ -44,8 +44,13 @@ config ZRAM_MEMORY_TRACKING
 
 	  See Documentation/blockdev/zram.txt for more information.
 
+config ZRAM_COMP
+	bool "Enable deafult ZRAM algorithm"
+	default n
+
 config ZRAM_DEFAULT_COMP_ALGORITHM
 	string "Default ZRAM algorithm"
+	depends on ZRAM_COMP
 	default "lzo"
 
 config ZRAM_SIZE_OVERRIDE
