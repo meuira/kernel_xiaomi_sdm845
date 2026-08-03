@@ -788,13 +788,13 @@ static int osm_cpufreq_cpu_init(struct cpufreq_policy *policy)
 			table[i].frequency = CPUFREQ_ENTRY_INVALID;
 
 		/*
-		 * Limit perfcl to 2323200 kHz to save power, since all
+		 * Limit perfcl to 2649600 kHz to balance, since all
 		 * frequencies above that on perfcl use an exponentially higher
 		 * amount of power.
 		 */
 		if (cpumask_intersects(get_cpu_mask(policy->cpu),
 				       cpu_perf_mask)) {
-			if (table[i].frequency > 2323200)
+			if (table[i].frequency > 2649600)
 				break;
 		}
 
